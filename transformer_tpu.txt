@@ -1,0 +1,168 @@
+# The rough guide to running transformer on TPU (TF 1.9.0, T2T 1.6.6, 2018-07-27)
+see also:
+
+https://cloud.google.com/tpu/docs/custom-setup
+
+https://github.com/tensorflow/tensor2tensor/blob/master/docs/cloud_tpu.md
+
+https://github.com/tensorflow/tensor2tensor/blob/master/docs/walkthrough.md
+
+```
+# install gcloud: https://cloud.google.com/sdk/install
+# or update:
+gcloud components update
+
+# configure local machine
+gcloud auth application-default login
+gcloud config set project myproject
+gcloud config set compute/zone us-central1-f
+
+# create storage bucket (one-time)
+gsutil mb gs://myproject-storage
+
+# create VM with enough memory for eval and enough disk to prepare data
+gcloud compute instances create myuser-vm2 --machine-type=n1-standard-2 --image-project=ml-images --image-family=tf-1-9 --scopes=cloud-platform --create-disk size=30,type=pd-standard
+# note: if you reuse a snapshot disk, delete the saved cloud state: rm .t2t/cloud_state/*
+
+# ssh to the VM
+# you can find the key under IdentityFile here:
+cat ~/.ssh/config
+# your user is your local user
+
+# configure VM
+sudo apt-get update && sudo apt-get --only-upgrade install kubectl google-cloud-sdk google-cloud-sdk-app-engine-grpc google-cloud-sdk-pubsub-emulator google-cloud-sdk-app-engine-go google-cloud-sdk-datastore-emulator google-cloud-sdk-app-engine-python google-cloud-sdk-cbt google-cloud-sdk-bigtable-emulator google-cloud-sdk-app-engine-python-extras google-cloud-sdk-datalab google-cloud-sdk-app-engine-java
+gcloud config set project myproject
+gcloud config set compute/zone us-central1-f
+
+# connect disk
+lsblk
+# we see that the additional disk is named: sdb
+sudo mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0,discard /dev/sdb
+sudo mkdir -p /mnt/disks/tmp
+sudo mount -o discard,defaults /dev/sdb /mnt/disks/tmp
+sudo chmod a+w /mnt/disks/tmp
+# you will need to mount again if the machine is rebooted
+
+# define variables
+export GCS_BUCKET=gs://myproject-storage
+export DATA_DIR=$GCS_BUCKET/t2t/data
+export OUT_DIR=$GCS_BUCKET/t2t/training/transformer_$HOSTNAME
+export BEAM_SIZE=4
+export ALPHA=0.6
+
+# prepare dataset
+t2t-datagen --problem=translate_ende_wmt32k --data_dir=$DATA_DIR --tmp_dir=/mnt/disks/tmp
+
+# you may need to grant your TPUs access to the bucket
+# https://cloud.google.com/tpu/docs/storage-buckets
+
+## train on new TPU
+
+# fix trainer code:
+sudo vi /usr/local/lib/python3.5/dist-packages/tensor2tensor/bin/t2t_trainer.py
+# change all os.getenv("USER") to os.uname()[1], to make sure each VM has its own TPU
+
+# fix TPU code:
+sudo vi /usr/local/lib/python3.5/dist-packages/tensor2tensor/utils/cloud_tpu.py
+# change all 1-8 and 1.8 to 1-9 and 1.9 respectively
+# in create_tpu(cls) after --version=%s add: --network=default (https://github.com/tensorflow/tensor2tensor/issues/924)
+
+# create passphrase (https://github.com/tensorflow/tensor2tensor/issues/920)
+gcloud compute ssh $HOSTNAME-vm
+# press enter twice
+# resource not found error is expected
+
+tmux
+t2t-trainer --model=transformer --hparams_set=transformer_tpu --problem=translate_ende_wmt32k --train_steps=250000 --eval_steps=10 --local_eval_frequency=1000 --data_dir=$DATA_DIR --output_dir=$OUT_DIR --cloud_tpu --cloud_delete_on_done --cloud_skip_confirmation
+# note that if t2t-trainer is to create a new TPU, you must wait until previous TPU's get their IP's assigned
+# (https://github.com/tensorflow/tensor2tensor/issues/956)
+# note: will fail if eval_steps is too high
+# (https://github.com/tensorflow/tensor2tensor/issues/933)
+
+# running tensorboard (solution that works also for windows)
+# note: don't try to run it on gcp console shell. it is unusably slow
+# following https://stackoverflow.com/a/42049234/664456
+# open port in firewall (first time only):
+gcloud compute firewall-rules create tensorboard-port --allow tcp:6006
+# open a new terminal on one of your VM's (or local machine if linux)
+tmux
+tensorboard --logdir=gs://myproject-storage/t2t/training
+# in your local browser open: IP_OF_VM:6006
+
+## test
+# predict
+echo -e 'Hello world\nGood world' > text.en
+t2t-decoder --data_dir=$DATA_DIR --problem=translate_ende_wmt32k --model=transformer --hparams_set=transformer_tpu --output_dir=$OUT_DIR --decode_hparams="beam_size=$BEAM_SIZE,alpha=$ALPHA" --decode_from_file=text.en --decode_to_file=translation.de
+cat translation.de
+
+# evaluate. make sure to use UNTOKENIZED data (and see also https://github.com/tensorflow/tensor2tensor/issues/317)
+wget https://raw.githubusercontent.com/tensorflow/models/master/official/transformer/test_data/newstest2014.en
+wget https://raw.githubusercontent.com/tensorflow/models/master/official/transformer/test_data/newstest2014.de
+t2t-decoder --data_dir=$DATA_DIR --problem=translate_ende_wmt32k --model=transformer --hparams_set=transformer_tpu --output_dir=$OUT_DIR --decode_hparams="beam_size=$BEAM_SIZE,alpha=$ALPHA" --decode_from_file=newstest2014.en --decode_to_file=translation.de
+# Note: Report this BLEU score in papers, not the internal approx_bleu metric.
+t2t-bleu --translation=translation.de --reference=newstest2014.de
+# for 250,000 epochs i get:
+BLEU_uncased =  26.60
+BLEU_cased =  26.11
+# which is comparable to 27.3 of arxiv.org/abs/1706.03762
+# as well as 28 for 300,000 epochs as reported in https://github.com/tensorflow/tensor2tensor
+# differences are expected due to TPU and batch size
+# training took 24 hours to reach 215,000 steps (could not a find a benchmark to compare to)
+
+# you will get the same numbers with sacreBLEU
+sudo pip3 install sacrebleu
+sacrebleu -t wmt14 -l en-de --echo src > wmt14-en-de.src
+t2t-decoder --data_dir=$DATA_DIR --problem=translate_ende_wmt32k --model=transformer --hparams_set=transformer_tpu --output_dir=$OUT_DIR --decode_hparams="beam_size=$BEAM_SIZE,alpha=$ALPHA" --decode_from_file=wmt14-en-de.src --decode_to_file=translation.de
+cat translation.de | sacrebleu -t wmt14/full -l en-de -tok intl -lc
+#BLEU+case.lc+lang.en-de+numrefs.1+smooth.exp+test.wmt14/full+tok.intl+version.1.2.10 = 26.60 58.5/32.3/20.2/13.2 (BP = 1.000 ratio = 1.026 hyp_len = 66350 ref_len = 64676)
+cat translation.de | sacrebleu -t wmt14/full -l en-de -tok intl
+# BLEU+case.mixed+lang.en-de+numrefs.1+smooth.exp+test.wmt14/full+tok.intl+version.1.2.10 = 26.11 57.4/31.7/19.8/12.9 (BP = 1.000 ratio = 1.026 hyp_len = 66350 ref_len = 64676)
+
+# (optional) delete checkpoint files to restart training
+gsutil rm -r $OUT_DIR
+
+# (optional) delete failed instances to cleanup or to fix errors (e.g. "Deadline Exceeded" due to trying running concurrent stuff on the same TPU, Some NaN errors)
+gcloud compute instances delete $HOSTNAME-vm --quiet
+gcloud compute tpus delete $HOSTNAME-tpu --quiet
+
+# (optional) profiling
+# see also:
+# https://www.youtube.com/watch?v=SxOsJPaxHME
+# https://cloud.google.com/tpu/docs/cloud-tpu-tool
+# https://www.tensorflow.org/versions/master/performance/datasets_performance
+capture_tpu_profile --tpu=$HOSTNAME-tpu --logdir=$OUT_DIR --duration_ms=10000
+# note: this requires pointing tensorflow to the same logdir (not to a parent dir)
+# (https://github.com/tensorflow/tensorboard/issues/1290)
+tensorboard --logdir=$OUT_DIR
+# note: trace_viewer works on chrome but not on firefox 61
+# (https://github.com/tensorflow/tensorboard/issues/1291)
+
+## (optional) running faster
+# https://cloud.google.com/tpu/docs/performance-guide
+# https://cloud.google.com/tpu/docs/troubleshooting
+# https://arxiv.org/abs/1804.00247
+# https://arxiv.org/abs/1806.00187
+
+# increase batch size and change activations and weights to float16
+# note for memory efficiency (from https://cloud.google.com/tpu/docs/troubleshooting):
+# "The total batch size should be a multiple of 64 (8 per TPU core), and feature dimensions should be a multiple of 128,
+# or
+# The total batch size should be a multiple of 1024 (128 per TPU core), and feature dimensions should be a multiple of 8"
+sudo vi /usr/local/lib/python3.5/dist-packages/tensor2tensor/models/transformer.py
+# in update_hparams_for_tpu(hparams)
+# change: batch_size = 18432
+# add afterwards:
+# hparams.activation_dtype = "bfloat16"
+# hparams.weight_dtype = "bfloat16"
+sudo vi /usr/local/lib/python3.5/dist-packages/tensor2tensor/utils/decoding.py
+# in decode_from_file(...) add in the begining:
+# hparams.weight_dtype = "float32"
+# (https://github.com/tensorflow/tensor2tensor/issues/940)
+sudo vi /usr/local/lib/python3.5/dist-packages/tensor2tensor/layers/common_attention.py
+# in add_timing_signal_1d(...) change: return x + tf.cast(signal, x.dtype)
+# (https://github.com/tensorflow/tensor2tensor/issues/932)
+# note: disable eval to be quicker and prevent memory error
+# run t2t_trainer with --schedule=train
+
+# delete checkpoints and instances as described above and train
+```
