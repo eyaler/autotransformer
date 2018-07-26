@@ -15,7 +15,19 @@ Cifka et al., Eval all, trust a few, do wrong to none: Comparing sentence genera
 
 Cifka and Bojar, Are BLEU and Meaning Representation in Opposition? arxiv.org/abs/1805.06536
 
-A rough guide for training transformer on TPU can be found here:
+motivation:
+
+Bowman et al., Generating Sentences from a Continuous Space, arxiv.org/abs/1511.06349
+
+Gan et al., Learning Generic Sentence Representations Using Convolutional Neural Networks arxiv.org/abs/1611.07897
+
+Semeniuta et al., A Hybrid Convolutional Variational Autoencoder for Text Generation, arxiv.org/abs/1702.02390
+
+Zhao et al, Adversarially Regularized Autoencoders, arxiv.org/abs/1706.04223
+
+https://blogs.helsinki.fi/language-technology/files/2017/09/FINMT2017-Bojar.pdf
+
+A rough guide to training transformer on TPU can be found here:
 
 https://github.com/eyaler/autotransformer/blob/master/transformer_tpu.txt
 
