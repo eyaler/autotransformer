@@ -1,13 +1,9 @@
-# The rough guide to running transformer on TPU (TF 1.9.0, T2T 1.6.6, 2018-07-27)
-see also:
+## The rough guide to running transformer on TPU (TF 1.9.0, T2T 1.6.6, 2018-07-27)
+#see also:
+#https://cloud.google.com/tpu/docs/custom-setup
+#https://github.com/tensorflow/tensor2tensor/blob/master/docs/cloud_tpu.md
+#https://github.com/tensorflow/tensor2tensor/blob/master/docs/walkthrough.md
 
-https://cloud.google.com/tpu/docs/custom-setup
-
-https://github.com/tensorflow/tensor2tensor/blob/master/docs/cloud_tpu.md
-
-https://github.com/tensorflow/tensor2tensor/blob/master/docs/walkthrough.md
-
-```
 # install gcloud: https://cloud.google.com/sdk/install
 # or update:
 gcloud components update
@@ -165,4 +161,3 @@ sudo vi /usr/local/lib/python3.5/dist-packages/tensor2tensor/layers/common_atten
 # run t2t_trainer with --schedule=train
 
 # delete checkpoints and instances as described above and train
-```
